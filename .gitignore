@@ -1,0 +1,27 @@
+# Executables
+*.exe
+*.out
+*.app
+
+# Compiled Object files
+*.o
+*.obj
+*.slo
+*.lo
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Libraries
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Common Build Directories
+build/
+Build/
+bin/
+out/
