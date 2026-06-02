@@ -1,3 +1,4 @@
+#pragma once
 #include <string>
 
 enum statuses {QUEUED, PROCESSING, COMPLETED, FAILED};

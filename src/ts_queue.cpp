@@ -1,32 +1,21 @@
-#include "job.h"
-#include <queue>
-#include <mutex>
-#include <condition_variable>
+#include "ts_queue.h"
 
-class ts_queue {
-private:
-    std::queue<Job> m_queue;
-    std::mutex m_mutex;
-    std::condition_variable m_condv;
+void TSQueue::push(const Job& newJob) {
+    std::unique_lock<std::mutex> lock(m_mutex);
 
-public:
-    void push(const Job& newJob) {
-        std::unique_lock<std::mutex> lock(m_mutex);
+    m_queue.push(newJob);
 
-        m_queue.push(newJob);
+    m_condv.notify_one(); 
+}
 
-        m_condv.notify_one(); 
-    }
+Job TSQueue::pop() {
+    std::unique_lock<std::mutex> lock(m_mutex);
 
-    Job pop() {
-        std::unique_lock<std::mutex> lock(m_mutex);
+    m_condv.wait(lock, [this]() {return !m_queue.empty();});
 
-        m_condv.wait(lock, [this]() {return !m_queue.empty();});
+    Job poppedJob = m_queue.front();
+    m_queue.pop();
 
-        Job poppedJob = m_queue.front();
-        m_queue.pop();
+    return poppedJob;
+}
 
-        return poppedJob;
-    }
-
-};
