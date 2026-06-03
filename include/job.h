@@ -8,7 +8,7 @@ enum statuses {QUEUED, PROCESSING, COMPLETED, FAILED};
 struct Job {
     int jobId;
     std::string message;
-    std::string olamaResponse;
+    std::string ollamaResponse;
     statuses status;
 
 };
