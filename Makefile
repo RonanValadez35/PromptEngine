@@ -7,7 +7,7 @@ build/server: src/server.cpp
 
 server: build/server
 
-test: src/ts_queue.cpp tests/test_ts_queue.cpp
+test_queue: src/ts_queue.cpp tests/test_ts_queue.cpp
 	$(CXX) $(CXXFLAGS) src/ts_queue.cpp tests/test_ts_queue.cpp \
 	$(LDFLAGS) \
 	-lgtest \
@@ -15,5 +15,16 @@ test: src/ts_queue.cpp tests/test_ts_queue.cpp
 	-pthread \
 	-o build/test_queue
 
+test_thread_pool: src/ts_queue.cpp src/thread_pool.cpp tests/test_thread_pool.cpp
+	$(CXX) $(CXXFLAGS) src/ts_queue.cpp src/thread_pool.cpp tests/test_thread_pool.cpp \
+	$(LDFLAGS) \
+	-lgtest \
+	-lgtest_main \
+	-pthread \
+	-o build/test_thread_pool
+
+run_tests: test_queue test_thread_pool
+	./build/test_queue
+	./build/test_thread_pool
 clean:
-	rm -f build/server build/test_queue
+	rm -f build/server build/test_queue build/test_thread_pool
