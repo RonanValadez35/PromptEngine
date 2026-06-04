@@ -11,7 +11,7 @@ private:
     std::condition_variable m_condv;
 
 public:
-    void push(const Job& newJob);
+    void push(Job&& newJob);
     Job pop();
 
 };

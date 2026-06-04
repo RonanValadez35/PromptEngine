@@ -9,22 +9,25 @@ ThreadPool::ThreadPool(TSQueue& queue, int numThreads):
             m_threads.emplace_back([this](){
                 while (true) {
 
-                Job popedJob = m_jobsQueue.pop();
+                Job popedJob = std::move(m_jobsQueue.pop());
                 if (popedJob.jobId == -1) {
                     break;
                 }
-
-                popedJob.ollamaResponse = "Dummy response";
+                popedJob.status = PROCESSING;
+                std::string response = "Dummy response";
+                popedJob.ollamaResponse.set_value(response);
                 popedJob.status = COMPLETED;
             }
             });
         }
     }
 ThreadPool::~ThreadPool() {
-    Job shutdownJob {-1, "__shutdown__", "", FAILED};
 
     for (size_t i = 0; i < m_threads.size(); i++) {
-        m_jobsQueue.push(shutdownJob);
+        Job shutdownJob {-1, "__shutdown__", 
+            std::promise<std::string>{}, FAILED};
+
+        m_jobsQueue.push(std::move(shutdownJob));
     }
 
     for (auto& thread: m_threads) {

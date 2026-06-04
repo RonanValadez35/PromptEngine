@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <future>
 
 enum statuses {QUEUED, PROCESSING, COMPLETED, FAILED};
 
@@ -8,7 +9,7 @@ enum statuses {QUEUED, PROCESSING, COMPLETED, FAILED};
 struct Job {
     int jobId;
     std::string message;
-    std::string ollamaResponse;
+    std::promise<std::string> ollamaResponse;
     statuses status;
-
+    
 };
