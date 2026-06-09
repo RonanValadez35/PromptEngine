@@ -2,10 +2,21 @@ CXX = g++
 CXXFLAGS = -std=c++20 -I/opt/homebrew/include -Iinclude -I/opt/homebrew/opt/curl/include/curl
 LDFLAGS = -L/opt/homebrew/lib
 
-build/server: src/server.cpp
-	$(CXX) $(CXXFLAGS) src/server.cpp -o build/server
+build/server: src/server.cpp src/ts_queue.cpp src/thread_pool.cpp src/ollama_runner.cpp
+	$(CXX) $(CXXFLAGS) \
+	src/server.cpp \
+	src/ts_queue.cpp \
+	src/thread_pool.cpp \
+	src/ollama_runner.cpp \
+	$(LDFLAGS) \
+	-lcurl \
+	-pthread \
+	-o build/server
 
 server: build/server
+
+run_server: build/server
+	./build/server
 
 test_queue: src/ts_queue.cpp tests/test_ts_queue.cpp
 	$(CXX) $(CXXFLAGS) src/ts_queue.cpp tests/test_ts_queue.cpp \
@@ -39,6 +50,16 @@ debug:
 	-pthread \
 	-o build/test_thread_pool
 
+
+bench: src/ts_queue.cpp src/thread_pool.cpp tests/mock_ollama_runner.cpp tests/bench_thread_pool.cpp
+	$(CXX) $(CXXFLAGS) \
+	src/ts_queue.cpp \
+	src/thread_pool.cpp \
+	tests/mock_ollama_runner.cpp \
+	tests/bench_thread_pool.cpp \
+	$(LDFLAGS) \
+	-pthread \
+	-o build/bench
 
 run_tests: test_queue test_thread_pool
 	./build/test_queue

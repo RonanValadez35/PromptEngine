@@ -8,7 +8,7 @@ private:
     std::string m_model;
 
 public:
-    explicit OllamaRunner(std::string model = "llama3.2:1b");
+    explicit OllamaRunner(std::string model = "gemma4:31b-cloud");
     ~OllamaRunner();
     OllamaRunner(const OllamaRunner&) = delete;
     OllamaRunner& operator=(const OllamaRunner&) = delete;
