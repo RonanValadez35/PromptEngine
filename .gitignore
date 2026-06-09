@@ -3,6 +3,8 @@
 *.out
 *.app
 
+# Environment variables
+.env
 # Compiled Object files
 *.o
 *.obj
