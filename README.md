@@ -15,11 +15,11 @@ job framework.
 
 ```
                  ┌──────────────────────────────────────────────┐
-                 │                 server (Crow)                 │
+                 │                 server (Crow)                │
    HTTP POST     │                                              │
-  /generate ───▶ │  handler: parse JSON ─▶ build Job ─▶ push ──┐ │
-                 │                                            │ │
-                 │   ◀── future.get() (blocks for result) ◀───┘ │
+  /generate ───▶ │  handler: parse JSON ─▶ build Job ─▶ push ──┐│
+                 │                                             ││
+                 │   ◀── future.get() (blocks for result)  ◀───┘│
                  └───────────────────┬──────────────────────────┘
                                      │ push(Job&&)
                                      ▼
