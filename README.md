@@ -179,10 +179,51 @@ scripts/   load_test.sh and test_server.sh
 Makefile   build targets
 ```
 
-## Future Plans
+## Future architecture: durability
 
-```
-- Switch to Express server, and cache requests in Redis.
-- Replace the hand-rolled JSON extraction in `OllamaRunner` with a real JSON
-  parser.
-```
+The current design is single-process and fully in-memory: pending work lives in
+the `TSQueue` and job status/results live in the `JobRegistry` map. If the
+process restarts, both are lost — queued jobs disappear and `GET /jobs/:id`
+returns `404` for work that had already completed.
+
+Making the system durable means addressing two separate problems:
+
+1. **Persist results (the registry).** Back `JobRegistry` with a durable store
+   so completed/in-flight job records survive a restart. The existing
+   `insertRegistry` / `getRegistry` interface is the seam — only the
+   implementation changes, not the callers.
+2. **Persist the queue (recover in-flight work).** If a worker dies mid-job, the
+   job is stuck `PROCESSING` forever. A durable, recoverable queue is needed.
+
+### Target design
+
+- **Postgres = durable source of truth.** A `jobs` table
+  (`id, status, prompt, result, error, created_at, updated_at`) holds every job.
+  This is what actually guarantees no data loss on restart. The same table can
+  act as the work queue using `SELECT … FOR UPDATE SKIP LOCKED`, letting N
+  workers claim distinct jobs without contention.
+- **Redis = optional speed layer, not durability.** Redis is primarily
+  in-memory, so it is *not* the durability mechanism. It is justified only as a
+  cache for high-volume `GET /jobs/:id` polling, or as a faster queue broker in
+  front of Postgres — a performance optimization, not the safety net.
+
+A clean, defensible version of this is **Postgres only**: durable store +
+`SKIP LOCKED` queue + a startup/sweeper recovery pass that requeues any job left
+in `PROCESSING` past a lease timeout. Redis is added only when there is a
+measured reason to.
+
+### Correctness notes
+
+- **Acknowledge after commit.** Only return `202 Accepted` once the job is
+  committed to durable storage; acking after an in-memory push leaves a
+  lost-write window.
+- **At-least-once semantics.** Crash-recovery retries mean a job can run twice,
+  so handlers should be idempotent (e.g. via an idempotency key on submit).
+- **Crash recovery.** On startup, requeue anything not `COMPLETED`/`FAILED`.
+
+## Other future work
+
+- Eviction / TTL for old completed jobs so the registry does not grow forever.
+- Request timeouts, retries, and bounded-queue backpressure under load.
+- Replace `std::cout` debug logging with a leveled logger.
+- Metrics/observability: queue depth, processing latency, failure rate.

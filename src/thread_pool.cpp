@@ -16,13 +16,13 @@ ThreadPool::ThreadPool(TSQueue& queue, int numThreads):
                     break;
                 }
                 try{
-                    popedJob.status = PROCESSING;
+                    popedJob.jobState->status = PROCESSING;
                     std::string response = ollamaClient.getResponse(popedJob.message);
-                    popedJob.ollamaResponse.set_value(response);
-                    popedJob.status = COMPLETED;
-                } catch(...) {
-                    popedJob.status = FAILED;
-                    popedJob.ollamaResponse.set_exception(std::current_exception());
+                    popedJob.jobState->ollamaResponse = std::move(response);
+                    popedJob.jobState->status = COMPLETED;
+                } catch(const std::exception& e) {
+                    popedJob.jobState->errorMessage = e.what();
+                    popedJob.jobState->status = FAILED;
                 }
 
             }
@@ -32,8 +32,7 @@ ThreadPool::ThreadPool(TSQueue& queue, int numThreads):
 ThreadPool::~ThreadPool() {
 
     for (size_t i = 0; i < m_threads.size(); i++) {
-        Job shutdownJob {-1, "__shutdown__", 
-            std::promise<std::string>{}, FAILED};
+        Job shutdownJob{-1, "__shutdown__", nullptr};
 
         m_jobsQueue.push(std::move(shutdownJob));
     }

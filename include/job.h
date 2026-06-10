@@ -1,15 +1,18 @@
 #pragma once
 #include <string>
-#include <future>
+#include <memory>
+#include <atomic>
 
 enum statuses {QUEUED, PROCESSING, COMPLETED, FAILED};
 
-/*For now the job will have an ID, message, status and result
-    time stamp will be added later*/
+struct JobState {
+    std::atomic<statuses> status;
+    std::string ollamaResponse;   
+    std::string errorMessage;     //set upon failure
+};
+
 struct Job {
     int jobId;
     std::string message;
-    std::promise<std::string> ollamaResponse;
-    statuses status;
-    
+    std::shared_ptr<JobState> jobState;
 };

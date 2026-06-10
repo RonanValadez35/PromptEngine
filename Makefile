@@ -2,12 +2,13 @@ CXX = g++
 CXXFLAGS = -std=c++20 -I/opt/homebrew/include -Iinclude -I/opt/homebrew/opt/curl/include/curl
 LDFLAGS = -L/opt/homebrew/lib
 
-build/server: src/server.cpp src/ts_queue.cpp src/thread_pool.cpp src/ollama_runner.cpp
+build/server: src/server.cpp src/ts_queue.cpp src/thread_pool.cpp src/ollama_runner.cpp src/job_registry.cpp
 	$(CXX) $(CXXFLAGS) \
 	src/server.cpp \
 	src/ts_queue.cpp \
 	src/thread_pool.cpp \
 	src/ollama_runner.cpp \
+	src/job_registry.cpp \
 	$(LDFLAGS) \
 	-lcurl \
 	-pthread \
