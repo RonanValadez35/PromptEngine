@@ -5,14 +5,22 @@
 
 enum statuses {QUEUED, PROCESSING, COMPLETED, FAILED};
 
-struct JobState {
-    std::atomic<statuses> status;
-    std::string ollamaResponse;   
-    std::string errorMessage;     //set upon failure
-};
+// struct JobState {
+//     std::atomic<statuses> status;
+//     std::string ollamaResponse;   
+//     std::string errorMessage;     //set upon failure
+// };
 
-struct Job {
+// struct Job {
+//     int jobId;
+//     std::string message;
+//     std::shared_ptr<JobState> jobState;
+// };
+
+struct JobRecord {
     int jobId;
-    std::string message;
-    std::shared_ptr<JobState> jobState;
+    std::string prompt;
+    std::string ollamaResponse;
+    statuses status;
+    std::string errorMessage;
 };

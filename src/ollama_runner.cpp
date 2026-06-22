@@ -66,6 +66,9 @@ std::string OllamaRunner::getResponse(std::string_view prompt) {
     curl_easy_setopt(m_curl, CURLOPT_WRITEFUNCTION, writeCallback);
     curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, &response);
 
+    curl_easy_setopt(m_curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(m_curl, CURLOPT_TIMEOUT, 150L);
+
     const CURLcode result = curl_easy_perform(m_curl);
     std::cout << "Response: " << response << std::endl;
 

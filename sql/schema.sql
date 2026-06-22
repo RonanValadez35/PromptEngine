@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS jobs (
                     CHECK (status IN ('QUEUED', 'PROCESSING', 'COMPLETED', 'FAILED')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    locked_at       TIMESTAMPTZ
+    locked_at       TIMESTAMPTZ,
+    attempts        INT NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_queue ON jobs (status, created_at);

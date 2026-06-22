@@ -1,8 +1,31 @@
 #include "db_pool.h"
 
-DBPool::DBPool(const std::string& db_url, size_t num_connections) : m_db_url(db_url) {
+namespace {
+
+// Fold connection-level timeouts into the URL so every connection (initial and
+// reconnect) is protected against hanging forever on a dead/slow server:
+//   connect_timeout      - cap connect/reconnect time
+//   keepalives*/tcp_*    - detect a silently dead TCP connection
+//   statement_timeout    - server-side cap so a query can't run forever (ms)
+// %20 = space, %3D = '=' (percent-encoded for the URI query string).
+std::string withTimeouts(const std::string& db_url) {
+    static const std::string params =
+        "connect_timeout=10"
+        "&keepalives=1"
+        "&keepalives_idle=30"
+        "&keepalives_interval=10"
+        "&tcp_user_timeout=60000"
+        "&options=-c%20statement_timeout%3D120000";
+
+    const char separator = (db_url.find('?') == std::string::npos) ? '?' : '&';
+    return db_url + separator + params;
+}
+
+}
+
+DBPool::DBPool(const std::string& db_url, size_t num_connections) : m_db_url(withTimeouts(db_url)) {
     for (size_t i = 0; i < num_connections; i++) {
-        m_connection_pool.push(std::make_unique<pqxx::connection>(db_url));
+        m_connection_pool.push(std::make_unique<pqxx::connection>(m_db_url));
     }
 }
 

@@ -49,6 +49,16 @@ test_db_pool: src/db_pool.cpp tests/test_db_pool.cpp
 	-lgtest_main \
 	-pthread \
 	-o build/test_db_pool
+	
+test_job_store: src/job_store.cpp src/db_pool.cpp tests/test_job_store_functions.cpp
+	$(CXX) $(CXXFLAGS) src/job_store.cpp src/db_pool.cpp tests/test_job_store_functions.cpp \
+	$(LDFLAGS) \
+	-lpqxx \
+	-lpq \
+	-lgtest \
+	-lgtest_main \
+	-pthread \
+	-o build/test_job_store
 
 
 clean:
