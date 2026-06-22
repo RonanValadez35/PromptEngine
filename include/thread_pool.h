@@ -2,14 +2,16 @@
 
 #include <thread>
 #include <vector>
-#include "ts_queue.h"
+#include <atomic>
+#include "job_store.h"
 
 class ThreadPool {
 private:
+std::atomic<bool> m_runningFlag{true};
     std::vector<std::thread>  m_threads;
-    TSQueue& m_jobsQueue;
+    JobStore& m_jobStore;
     
 public:
-    ThreadPool(TSQueue& queue, int numThreads);
+    ThreadPool(JobStore& jobStore, int numThreads);
     ~ThreadPool();
 };

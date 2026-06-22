@@ -3,7 +3,13 @@
 #include "ts_queue.h"
 #include "thread_pool.h"
 #include "job_registry.h"
+#include "db_pool.h"
+#include "job_store.h"
 #include <atomic>
+#include <chrono>
+#include <iostream>
+#include <stdexcept>
+#include <cstdlib>
 
 int main() {
     crow::SimpleApp app;
@@ -13,6 +19,39 @@ int main() {
     std::atomic<int> nextJobId{0};
     JobRegistry jobMap;
 
+
+    // new Code for database:
+    const char* db_url = std::getenv("DATABASE_URL");
+    if (!db_url) {
+        throw std::runtime_error("DATABASE_URL not set");
+    }
+    DBPool dbPool(db_url, 8);
+    JobStore jobStore(dbPool);
+
+    // new code for reaper thread:
+    std::atomic<bool> stopFlag{false};
+    std::condition_variable reaperCV;
+    std::mutex reaperMutex;
+
+    std::thread reaperThread([&](){
+        constexpr auto interval = std::chrono::seconds(30);
+
+        std::unique_lock<std::mutex> lock(reaperMutex);
+        while (!stopFlag.load()) {
+
+            if (reaperCV.wait_for(lock, interval, [&](){return stopFlag.load();})) {
+                break;
+            }
+            lock.unlock();
+            try {
+                jobStore.requeueJobs();
+            } catch (const std::exception& e) {
+                std::cerr << "Reaper thread error: " << e.what() << std::endl;
+            }
+            lock.lock();
+        }
+
+    });
 
 
     CROW_ROUTE(app, "/generate").methods(crow::HTTPMethod::POST)
@@ -67,6 +106,12 @@ int main() {
     });
 
     app.port(18080).run();
+    {
+        std::lock_guard<std::mutex> lk(reaperMutex);
+        stopFlag.store(true);
+    }
+    reaperCV.notify_all();
+    reaperThread.join();
 
 
 }
