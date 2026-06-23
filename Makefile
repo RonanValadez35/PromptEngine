@@ -2,15 +2,17 @@ CXX = g++
 CXXFLAGS = -std=c++20 -I/opt/homebrew/include -Iinclude -I/opt/homebrew/opt/curl/include/curl
 LDFLAGS = -L/opt/homebrew/lib -L/opt/homebrew/opt/libpq/lib
 
-build/server: src/server.cpp src/ts_queue.cpp src/thread_pool.cpp src/ollama_runner.cpp src/job_registry.cpp
+build/server: src/server.cpp src/thread_pool.cpp src/ollama_runner.cpp src/db_pool.cpp src/job_store.cpp
 	$(CXX) $(CXXFLAGS) \
 	src/server.cpp \
-	src/ts_queue.cpp \
 	src/thread_pool.cpp \
 	src/ollama_runner.cpp \
-	src/job_registry.cpp \
+	src/db_pool.cpp \
+	src/job_store.cpp \
 	$(LDFLAGS) \
 	-lcurl \
+	-lpqxx \
+	-lpq \
 	-pthread \
 	-o build/server
 
@@ -49,7 +51,7 @@ test_db_pool: src/db_pool.cpp tests/test_db_pool.cpp
 	-lgtest_main \
 	-pthread \
 	-o build/test_db_pool
-	
+
 test_job_store: src/job_store.cpp src/db_pool.cpp tests/test_job_store_functions.cpp
 	$(CXX) $(CXXFLAGS) src/job_store.cpp src/db_pool.cpp tests/test_job_store_functions.cpp \
 	$(LDFLAGS) \
@@ -62,7 +64,9 @@ test_job_store: src/job_store.cpp src/db_pool.cpp tests/test_job_store_functions
 
 
 clean:
-	rm -f build/server build/test_queue build/test_thread_pool build/test_ollama_runner
+	rm -f build/server build/bench build/test_db_pool build/test_job_store build/test_thread_pool
+	rm -rf build/test_thread_pool.dSYM
+	rm -f build/*.o
 
 
 ######################################################################

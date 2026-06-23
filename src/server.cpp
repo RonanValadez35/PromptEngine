@@ -1,8 +1,6 @@
 #include "crow.h"
 #include "job.h"
-#include "ts_queue.h"
 #include "thread_pool.h"
-#include "job_registry.h"
 #include "db_pool.h"
 #include "job_store.h"
 #include <atomic>
@@ -14,12 +12,6 @@
 int main() {
     crow::SimpleApp app;
 
-    TSQueue jobsQueue;
-    ThreadPool pool(jobsQueue, 4);
-    std::atomic<int> nextJobId{0};
-    JobRegistry jobMap;
-
-
     // new Code for database:
     const char* db_url = std::getenv("DATABASE_URL");
     if (!db_url) {
@@ -27,6 +19,8 @@ int main() {
     }
     DBPool dbPool(db_url, 8);
     JobStore jobStore(dbPool);
+
+    ThreadPool pool(jobStore, 4);
 
     // new code for reaper thread:
     std::atomic<bool> stopFlag{false};
@@ -55,51 +49,39 @@ int main() {
 
 
     CROW_ROUTE(app, "/generate").methods(crow::HTTPMethod::POST)
-    ([&jobsQueue, &nextJobId, &jobMap](const crow::request& req){
+    ([&jobStore](const crow::request& req){
         const auto body = crow::json::load(req.body);
 
         if(!body) {
             return crow::response(400, "Invalid JSON input");
-        }
-
-        auto jStatePointer = std::make_shared<JobState>();
-        jStatePointer->status = QUEUED;
-
-        Job job;
-        int id = nextJobId++;
-        job.jobId = id;
-        job.message = body["prompt"].s();
-        
-        job.jobState = jStatePointer;
-        jobMap.insertRegistry(job.jobId, jStatePointer);
-        jobsQueue.push(std::move(job));
-        
+        }        
 
         try {
-            return crow::response(200, std::to_string(id));
+            int jobId = jobStore.insertJob(body["prompt"].s());
+            return crow::response(200, std::to_string(jobId));
         } catch (const std::exception& e) {
             return crow::response(500, e.what());
         }
     });
 
     CROW_ROUTE(app, "/job/<int>").methods(crow::HTTPMethod::GET)
-    ([&jobMap](int jobId){
-        auto jobPointer = jobMap.getRegistry(jobId);
+    ([&jobStore](int jobId){
+        auto job = jobStore.getJob(jobId);
         std::string response;
-        if (!jobPointer) {
+        if (!job) {
             response = "Job not found in registry";
             return crow::response(404, response);
         }
-        const statuses s = jobPointer->status;
+        const statuses s = job->status;
         if (s == FAILED) {
-            response = jobPointer->errorMessage;
+            response = job->errorMessage;
             return crow::response(500, response);
         }
         if (s == PROCESSING || s == QUEUED) {
             response = "Job still processing";
             return crow::response(202, response);
         } else if (s == COMPLETED) {
-            return crow::response(200, jobPointer->ollamaResponse);
+            return crow::response(200, job->ollamaResponse);
         } else {
             return crow::response(500, "Unknown job state");
         }
