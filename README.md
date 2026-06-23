@@ -2,50 +2,57 @@
 
 A multithreaded HTTP inference gateway written in modern C++20. PromptEngine
 accepts prompts over HTTP, queues them, and dispatches them across a pool of
-worker threads to an [Ollama](https://ollama.com) LLM backend, returning the
-generated text to the caller.
+worker threads to an [Ollama](https://ollama.com) LLM backend. The API is
+**asynchronous**: submitting a prompt returns a job ID immediately, and the
+caller polls a separate endpoint for the result.
 
 The project is intentionally built from low-level primitives (`std::mutex`,
-`std::condition_variable`, `std::thread`, `std::promise`/`std::future`) to
+`std::condition_variable`, `std::thread`, `std::atomic`, `std::shared_ptr`) to
 demonstrate the producer/consumer pattern, thread-pool design, RAII resource
-ownership, and async result propagation — rather than leaning on a higher-level
-job framework.
+ownership, and safe cross-thread state sharing — rather than leaning on a
+higher-level job framework.
 
 ## Architecture
 
 ```
-                 ┌──────────────────────────────────────────────┐
-                 │                 server (Crow)                │
-   HTTP POST     │                                              │
-  /generate ───▶ │  handler: parse JSON ─▶ build Job ─▶ push ──┐│
-                 │                                             ││
-                 │   ◀── future.get() (blocks for result)  ◀───┘│
-                 └───────────────────┬──────────────────────────┘
-                                     │ push(Job&&)
-                                     ▼
-                         ┌───────────────────────┐
-                         │   TSQueue (thread-safe │
-                         │   queue: mutex + condv)│
-                         └───────────┬───────────┘
-                                     │ pop()
-              ┌──────────────────────┼──────────────────────┐
-              ▼                      ▼                      ▼
-        ┌───────────┐          ┌───────────┐          ┌───────────┐
-        │  worker 0 │   ...    │  worker k │   ...    │  worker N │
-        │OllamaRunner│         │OllamaRunner│         │OllamaRunner│
-        └─────┬─────┘          └─────┬─────┘          └─────┬─────┘
-              └──────────── HTTPS ───┴──────────────────────┘
-                                     ▼
-                            Ollama /api/chat
+   POST /generate  ┌──────────────────────────────────────────────┐
+   {prompt} ─────▶ │                 server (Crow)                │
+                   │  handler: parse JSON ─▶ build Job ─┐         │
+   ◀── 200 {jobId} │   register JobState in JobRegistry │         │
+                   │                                    │ push    │
+   GET /job/<id>   │  handler: look up JobState ──▶ read status   │
+   ─────────────▶  │   202 processing / 200 result / 500 error    │
+   ◀── status/body └────────────────────┬─────────────────────────┘
+                                         │ push(Job&&)         ▲
+                                         ▼                     │ shared_ptr<JobState>
+                             ┌───────────────────────┐         │ (status, result, error)
+                             │   TSQueue (thread-safe │         │
+                             │   queue: mutex + condv)│         │
+                             └───────────┬───────────┘         │
+                                         │ pop()               │
+                  ┌──────────────────────┼──────────────────────┐
+                  ▼                      ▼                      ▼
+            ┌───────────┐          ┌───────────┐          ┌───────────┐
+            │  worker 0 │   ...    │  worker k │   ...    │  worker N │
+            │OllamaRunner│         │OllamaRunner│         │OllamaRunner│
+            └─────┬─────┘          └─────┬─────┘          └─────┬─────┘
+                  └──────────── HTTPS ───┴──────────────────────┘
+                                         ▼
+                                Ollama /api/chat
 ```
+
+The HTTP handler and the worker share a `std::shared_ptr<JobState>`: the worker
+writes status/result into it, and `GET /job/<id>` reads from the same object via
+the `JobRegistry`.
 
 Each component maps to a source file:
 
 | Component      | Files                                          | Responsibility                                                                 |
 | -------------- | ---------------------------------------------- | ----------------------------------------------------------------------------- |
-| HTTP server    | `src/server.cpp`                               | Crow app; parses requests, creates `Job`s, returns results.                   |
-| Job            | `include/job.h`                                | POD carrying id, prompt, `std::promise<std::string>`, and a status enum.       |
-| Thread-safe queue | `include/ts_queue.h`, `src/ts_queue.cpp`    | Bounded-blocking FIFO using `std::mutex` + `std::condition_variable`.          |
+| HTTP server    | `src/server.cpp`                               | Crow app; accepts prompts on `/generate`, returns a job ID, and serves status/results on `/job/<id>`. |
+| Job / JobState | `include/job.h`                                | `Job` carries id, prompt, and a `shared_ptr<JobState>`; `JobState` holds an `atomic` status enum, the result, and any error message. |
+| Job registry   | `include/job_registry.h`, `src/job_registry.cpp` | Mutex-guarded `id → shared_ptr<JobState>` map so the `/job/<id>` handler can look up a job's current state. |
+| Thread-safe queue | `include/ts_queue.h`, `src/ts_queue.cpp`    | Blocking FIFO using `std::mutex` + `std::condition_variable`.                  |
 | Thread pool    | `include/thread_pool.h`, `src/thread_pool.cpp` | Spawns N workers, each draining the queue; clean shutdown via sentinel jobs.   |
 | Ollama client  | `include/ollama_runner.h`, `src/ollama_runner.cpp` | libcurl wrapper that POSTs to the Ollama chat API and extracts the response. |
 
@@ -54,9 +61,15 @@ Each component maps to a source file:
 - **Producer/consumer:** the HTTP handler is the producer, worker threads are
   consumers. They communicate only through the thread-safe queue, keeping
   request acceptance decoupled from inference.
-- **Async result delivery:** each `Job` carries a `std::promise`. The handler
-  holds the matching `std::future`; a worker fulfills the promise (value or
-  exception) when inference completes, and the handler unblocks.
+- **Async submit/poll:** `POST /generate` registers a `JobState`, enqueues the
+  job, and immediately returns a job ID — it never blocks on inference. The
+  caller polls `GET /job/<id>` to observe progress and retrieve the result.
+- **Shared state, not promises:** each `Job` and the registry hold a
+  `std::shared_ptr<JobState>` to the *same* object. A worker writes the result
+  (or error) and then sets an `std::atomic<status>`; the polling handler reads
+  that atomic and, only once it observes `COMPLETED`/`FAILED`, reads the
+  corresponding string. The atomic provides the ordering guarantee that makes
+  the result visible without a data race.
 - **Graceful shutdown:** the `ThreadPool` destructor pushes one sentinel job
   (`jobId == -1`) per worker as a poison pill, then joins every thread, so no
   request is dropped mid-flight and no thread is detached.
@@ -108,10 +121,13 @@ passing a model name to the `OllamaRunner` constructor.
 
 ## API
 
+The API is asynchronous: submit a prompt to get a job ID, then poll for the
+result.
+
 ### `POST /generate`
 
-Submit a prompt for completion. The request blocks until the worker returns a
-result.
+Submit a prompt for completion. Returns immediately with a job ID; the prompt is
+processed in the background by a worker thread.
 
 Request body:
 
@@ -129,11 +145,36 @@ curl -X POST http://localhost:18080/generate \
 
 Responses:
 
-| Status | Meaning                                      |
-| ------ | -------------------------------------------- |
-| `200`  | Generated text (plain string body).          |
-| `400`  | Invalid / unparseable JSON body.             |
-| `500`  | Upstream Ollama error (message in body).     |
+| Status | Meaning                                          |
+| ------ | ------------------------------------------------ |
+| `200`  | Job accepted; body is the job ID (plain integer). |
+| `400`  | Invalid / unparseable JSON body.                 |
+
+### `GET /job/<id>`
+
+Poll the status and result of a previously submitted job.
+
+```bash
+curl -i http://localhost:18080/job/0
+```
+
+Responses:
+
+| Status | Meaning                                                        |
+| ------ | -------------------------------------------------------------- |
+| `200`  | Job completed; body is the generated text.                    |
+| `202`  | Job still `QUEUED` or `PROCESSING`; poll again.               |
+| `404`  | No job with that ID in the registry.                          |
+| `500`  | Job `FAILED` (e.g. upstream Ollama error); body is the message. |
+
+Typical flow — submit, capture the ID, then poll until it completes:
+
+```bash
+ID=$(curl -s -X POST http://localhost:18080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Say hello in one short sentence"}')
+curl -i "http://localhost:18080/job/$ID"
+```
 
 ## Testing & Benchmarking
 
@@ -183,7 +224,7 @@ Makefile   build targets
 
 The current design is single-process and fully in-memory: pending work lives in
 the `TSQueue` and job status/results live in the `JobRegistry` map. If the
-process restarts, both are lost — queued jobs disappear and `GET /jobs/:id`
+process restarts, both are lost — queued jobs disappear and `GET /job/<id>`
 returns `404` for work that had already completed.
 
 Making the system durable means addressing two separate problems:
@@ -204,7 +245,7 @@ Making the system durable means addressing two separate problems:
   workers claim distinct jobs without contention.
 - **Redis = optional speed layer, not durability.** Redis is primarily
   in-memory, so it is *not* the durability mechanism. It is justified only as a
-  cache for high-volume `GET /jobs/:id` polling, or as a faster queue broker in
+  cache for high-volume `GET /job/<id>` polling, or as a faster queue broker in
   front of Postgres — a performance optimization, not the safety net.
 
 A clean, defensible version of this is **Postgres only**: durable store +
@@ -227,3 +268,6 @@ measured reason to.
 - Request timeouts, retries, and bounded-queue backpressure under load.
 - Replace `std::cout` debug logging with a leveled logger.
 - Metrics/observability: queue depth, processing latency, failure rate.
+
+
+Worker threads in the pool could block indefinitely because neither the outbound Ollama HTTP call nor the Postgres queries had any timeout configured — a hung curl_easy_perform or a stalled tx.exec/tx.commit would pin a worker (and the DB connection it held) forever, and once enough connections were pinned, DBPool::acquire() would deadlock the rest of the pool waiting on its unbounded condition variable. We bounded the common cases by adding CURLOPT_CONNECTTIMEOUT/CURLOPT_TIMEOUT to the Ollama client and folding connect_timeout, TCP keepalive/tcp_user_timeout, and statement_timeout into the DB connection string, so hung network or query calls now fail within a bounded time and release their connection instead of hanging. The remaining edge cases — a fully down DB eventually draining the pool, and a transient outage permanently shrinking it (since checkin drops a slot when reconnection fails), leaving acquire() blocked even after recovery — were deliberately left unaddressed as out-of-scope hardening for a controlled, local resume project.
