@@ -408,3 +408,7 @@ Inspect persisted jobs directly:
 ```bash
 psql promptengine -c "SELECT id, status, attempts, created_at FROM jobs ORDER BY id DESC LIMIT 10;"
 ```
+
+## Other Notes
+
+- The first request will be a little slower due to a coldstart.
