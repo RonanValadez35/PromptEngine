@@ -1,101 +1,111 @@
 # PromptEngine
 
 A multithreaded HTTP inference gateway written in modern C++20. PromptEngine
-accepts prompts over HTTP, queues them, and dispatches them across a pool of
-worker threads to an [Ollama](https://ollama.com) LLM backend. The API is
-**asynchronous**: submitting a prompt returns a job ID immediately, and the
-caller polls a separate endpoint for the result.
+accepts prompts over HTTP POST requests, stores them in a PostgreSQL database, 
+and dispatches them across a pool of worker threads to an [Ollama](https://ollama.com) 
+LLM backend. The API is **asynchronous**: submitting a prompt returns a job ID immediately, and the
+caller polls a separate endpoint for the result. CROW is a c++ open source HTTP webframework that enables me to create simple API endpoints. PostgreSQL is using libpqxx 8.0.1 which requires C++20.
 
 The project is intentionally built from low-level primitives (`std::mutex`,
-`std::condition_variable`, `std::thread`, `std::atomic`, `std::shared_ptr`) to
+`std::condition_variable`, `std::thread`, `std::atomic`) to
 demonstrate the producer/consumer pattern, thread-pool design, RAII resource
-ownership, and safe cross-thread state sharing — rather than leaning on a
+ownership, and safe cross-thread state sharing rather than leaning on a
 higher-level job framework.
 
-## Architecture
+This project went through multiple design improvements, which can be seen from the various branches
+in this repo. The branches are listed in order of first to last below along with what they acomplished:
 
-```
-   POST /generate  ┌──────────────────────────────────────────────┐
-   {prompt} ─────▶ │                 server (Crow)                │
-                   │  handler: parse JSON ─▶ build Job ─┐         │
-   ◀── 200 {jobId} │   register JobState in JobRegistry │         │
-                   │                                    │ push    │
-   GET /job/<id>   │  handler: look up JobState ──▶ read status   │
-   ─────────────▶  │   202 processing / 200 result / 500 error    │
-   ◀── status/body └────────────────────┬─────────────────────────┘
-                                         │ push(Job&&)         ▲
-                                         ▼                     │ shared_ptr<JobState>
-                             ┌───────────────────────┐         │ (status, result, error)
-                             │   TSQueue (thread-safe │         │
-                             │   queue: mutex + condv)│         │
-                             └───────────┬───────────┘         │
-                                         │ pop()               │
-                  ┌──────────────────────┼──────────────────────┐
-                  ▼                      ▼                      ▼
-            ┌───────────┐          ┌───────────┐          ┌───────────┐
-            │  worker 0 │   ...    │  worker k │   ...    │  worker N │
-            │OllamaRunner│         │OllamaRunner│         │OllamaRunner│
-            └─────┬─────┘          └─────┬─────┘          └─────┬─────┘
-                  └──────────── HTTPS ───┴──────────────────────┘
-                                         ▼
-                                Ollama /api/chat
-```
+1. version_1:
+    This was the first rendition of the project which sought to implement a multi threaded server that
+    could forward prompts to an ollama cloud model (gemma4:31b-cloud). The server would them return the response back to the client via the response message of the POST request. This version only had one POST endpoint /generate. A thread safe queue was built and utalized along with std::promise and std::future to transport the ollama response back to the client. 
 
-The HTTP handler and the worker share a `std::shared_ptr<JobState>`: the worker
-writes status/result into it, and `GET /job/<id>` reads from the same object via
-the `JobRegistry`.
+    A basic flow of the project looked like the following:
+    send POST /generate with prompt --> create Job struct and push onto thread safe queue --> CROW thread waits for ollama_resposne field --> worker thread pops Job sends to ollama via CURL(libcurl) --> worker thread sets promise (ollam_response) --> CROW thread gets response from corresponding future and returns it to client.
 
-Each component maps to a source file:
+    Included in every version is a folder called scripts which includes two bash scripts. By running load_test.sh we can see many metrics for our server. The script showed that with 20 concurrent requests it had a 100% success rate, averaging 6.1s end-to-end latency and 1.68 requests/sec throughput.
 
-| Component      | Files                                          | Responsibility                                                                 |
-| -------------- | ---------------------------------------------- | ----------------------------------------------------------------------------- |
-| HTTP server    | `src/server.cpp`                               | Crow app; accepts prompts on `/generate`, returns a job ID, and serves status/results on `/job/<id>`. |
-| Job / JobState | `include/job.h`                                | `Job` carries id, prompt, and a `shared_ptr<JobState>`; `JobState` holds an `atomic` status enum, the result, and any error message. |
-| Job registry   | `include/job_registry.h`, `src/job_registry.cpp` | Mutex-guarded `id → shared_ptr<JobState>` map so the `/job/<id>` handler can look up a job's current state. |
-| Thread-safe queue | `include/ts_queue.h`, `src/ts_queue.cpp`    | Blocking FIFO using `std::mutex` + `std::condition_variable`.                  |
-| Thread pool    | `include/thread_pool.h`, `src/thread_pool.cpp` | Spawns N workers, each draining the queue; clean shutdown via sentinel jobs.   |
-| Ollama client  | `include/ollama_runner.h`, `src/ollama_runner.cpp` | libcurl wrapper that POSTs to the Ollama chat API and extracts the response. |
+    While this approach acheived the goals I had originally set in mind, that being learning lower level design, it was too far away from something that could be seen in production. Mainly having one POST endpoint and having the client wait for the resposne. This was wasteful as I have only two CROW threads running, meaning that not every request message could be pushed onto the queue due to the waiting of the std::promise. 
+
+2. async_client_verion:
+      This was the second iteration of the project. The API was redesigned from a single blocking endpoint into an asynchronous job based architecture consisting of POST /generate and GET /job/<id>. Instead of holding an HTTP connection open while inference was running, the server immediately returns a job ID that can later be used to retrieve the result.
+      
+      To support this change, the design moved away from a std::promise/std::future-based workflow and introduced a shared JobState object. Each Job contains a std::shared_ptr<JobState>, allowing worker threads to update the job status and result as processing progresses. A JobRegistry class was added to maintain a hash map of job IDs to their corresponding JobState objects. This enables clients to poll the GET /job/<id> endpoint for job status and results, a pattern commonly used for long-running tasks in production systems.
+
+      A basic flow of the project looked like the following: 
+      send POST /generate with prompt --> create Job struct and push onto thread safe queue --> put jobId and corresponding job state in jobRegistry --> return jobId from POST response --> worker thread pops from thread safe queue --> worker thread calls ollama(libcurl) and puts response into job state object --> client polls GET endpoint with requested jobId for ollama response.   
+
+      Running that same script we get 20 concurrent jobs with a 100% success rate, achieving 3.42 jobs/sec throughput and 3.34s average end-to-end latency.
+
+      This is a drastic improvement from the previous version, but there is still one large feature missing that would make this project more in line with a production grade system. Currently, if a job fails during processing, it remains failed indefinitely. Likewise, if the server shuts down while jobs are queued or in progress, those jobs are lost.
+
+      To address this limitation, the next iteration will introduce persistent storage and a retry mechanism. Persisting jobs in a database would allow them to survive server restarts, while a retry policy would enable transient failures to be automatically reprocessed. Together, these additions would improve the reliability and fault tolerance of the system, bringing it closer to the architecture used in production job-processing services.
+
+3. main(data_persistance):
+      This is the most up to date version of the inference server. This version introduces a Postgres local database that stores Job Record structs. The database replaces the Job Registry and the thread safe queue. A db_pool class is introduced that holds a queue containing unique pointers with a custom deleter of a pqxx object. This approach utalizes RAII
+
+
+      This is the most recent version of the inference server. The architecture was redesigned to use PostgreSQL as the system of record for all job records, replacing the in-memory queue and job registry. Each inference request is persisted in a jobs table, allowing work and results to survive process restarts.
+
+      Worker threads no longer consume jobs from an in-process queue. Instead, they claim work directly from the database using `SELECT ... FOR UPDATE SKIP LOCKED`, enabling multiple workers to safely process distinct jobs concurrently without duplicate work. Database access is managed through a connection pool, reducing connection overhead and allowing workers to efficiently share a fixed number of PostgreSQL connections.
+
+      A dedicated JobStore layer encapsulates all database operations, while a background reaper thread periodically requeues jobs that have been stuck in PROCESSING beyond a lease timeout or have FAILED less than 3 times. This prevents work from being permanently lost if a worker crashes during execution.
+
+      The resulting workflow is:
+
+      POST /generate --> store job as in database as QUEUED --> return job ID --> worker claims job from PostgreSQL --> run inference through Ollama(libcurl) --> update job status to COMPLETED or FAILED --> client retrieves results through GET /job/<id>.
+
+      This redesign transforms the system from an in-memory asynchronous service into a durable job-processing platform. By adding persistent storage, distributed-safe job claiming, connection pooling, and automatic recovery of abandoned work, the architecture more closely resembles the job execution systems used in production environments.
+
+      From running the same script we get 20 concurrent jobs with a 100% success rate, achieving 2.99 jobs/sec throughput and 3.70s average end-to-end latency. So a slightly worse performance than the previous design, but the difference is negligible for the benefits the system recieves by implementing PostgreSQL.
+
+      While this is still nowhere near a production-level project, it replicates many concepts commonly found in production systems, such as asynchronous request handling, persistent job storage, connection pooling, fault tolerant job recovery, concurrent worker processing, and database-backed coordination between services.
+
+      For future improvements check the future work section.
+
+
+## Architecture Diagram
+
+![PromptEngine high-level architecture](images/PromptEngineHighLevel.drawio.png)
 
 ### Design notes
 
-- **Producer/consumer:** the HTTP handler is the producer, worker threads are
-  consumers. They communicate only through the thread-safe queue, keeping
-  request acceptance decoupled from inference.
-- **Async submit/poll:** `POST /generate` registers a `JobState`, enqueues the
-  job, and immediately returns a job ID — it never blocks on inference. The
-  caller polls `GET /job/<id>` to observe progress and retrieve the result.
-- **Shared state, not promises:** each `Job` and the registry hold a
-  `std::shared_ptr<JobState>` to the *same* object. A worker writes the result
-  (or error) and then sets an `std::atomic<status>`; the polling handler reads
-  that atomic and, only once it observes `COMPLETED`/`FAILED`, reads the
-  corresponding string. The atomic provides the ordering guarantee that makes
-  the result visible without a data race.
-- **Graceful shutdown:** the `ThreadPool` destructor pushes one sentinel job
-  (`jobId == -1`) per worker as a poison pill, then joins every thread, so no
-  request is dropped mid-flight and no thread is detached.
-- **RAII everywhere:** `OllamaRunner` owns its curl handle and is non-copyable /
-  non-movable; the curl handle is released in its destructor. The pool joins all
-  threads on destruction.
-- **Per-worker curl handle:** each worker constructs its own `OllamaRunner`, so
-  there is no shared mutable curl state across threads.
+- **Durable queue + registry:** the `jobs` table is both the work queue and the
+  result store. No in-memory state is required for correctness across restarts.
+- **Async submit/poll:** `POST /generate` commits a `QUEUED` row and returns
+  immediately; the caller polls `GET /job/<id>` for `202` (in progress) or
+  `200`/`500` (done/failed).
+- **Concurrent dispatch:** `claimNextJob` uses `SELECT … FOR UPDATE SKIP
+  LOCKED` so each worker atomically claims a distinct job without blocking peers.
+- **Lease recovery:** a background reaper calls `requeueJobs()` to reset jobs
+  left `PROCESSING` past a timeout, or retry `FAILED` jobs under an attempt cap.
+- **RAII connection pool:** `DBPool::ConnectionPtr` is a `unique_ptr` with a
+  custom deleter that returns connections to the pool on scope exit, including
+  on exceptions.
+- **Per-worker curl handle:** each worker owns its own `OllamaRunner`, so there
+  is no shared mutable curl state across threads.
 
 ## Requirements
+
+For full step-by-step setup, see [Set up steps](#set-up-steps).
 
 - A C++20 compiler (`g++` / `clang++`)
 - [libcurl](https://curl.se/libcurl/)
 - [Crow](https://github.com/CrowCpp/Crow) (header-only HTTP framework)
+- [nlohmann/json](https://github.com/nlohmann/json) (JSON parsing in `OllamaRunner`)
+- [libpqxx](https://github.com/jtv/libpqxx) 8.x (PostgreSQL C++ client; requires C++20)
+- [PostgreSQL](https://www.postgresql.org/) (job storage)
 - [GoogleTest](https://github.com/google/googletest) (for the test targets)
-- An Ollama API key
+- `DATABASE_URL` and an Ollama API key (`OLLAMA_KEY`)
 
 On macOS (Homebrew):
 
 ```bash
-brew install curl googletest
-# Crow is header-only; install it or vendor crow.h on your include path.
+brew install curl crow nlohmann-json libpqxx postgresql@16 googletest
 ```
 
 The `Makefile` targets Homebrew's default prefix (`/opt/homebrew`). Adjust the
-`-I` / `-L` paths if your dependencies live elsewhere.
+`-I` / `-L` paths if your dependencies live elsewhere. See [Set up steps](#set-up-steps)
+for database creation and environment variable setup.
 
 ## Configuration
 
@@ -181,93 +191,240 @@ curl -i "http://localhost:18080/job/$ID"
 Unit tests use GoogleTest:
 
 ```bash
-make run_tests          # thread-safe queue + thread pool tests
-make run_ollama_test    # Ollama client parsing test
+make test_db_pool
+make test_job_store
 ```
 
-### Throughput benchmark
-
-`tests/bench_thread_pool.cpp` exercises the real `ThreadPool` + `TSQueue` with a
-mock, sleep-based `OllamaRunner` (`tests/mock_ollama_runner.cpp`) so the pool's
-scaling with worker count is observable without hitting the network:
-
+for older versions:
 ```bash
-make bench
+make test_queue
+make test_thread_pool
+make run_tests
 
-
-With a fixed per-job delay, N workers complete the batch roughly N times faster,
-making the pool's parallelism visible.
-
-### Live load test
-
-`scripts/load_test.sh` fires concurrent requests at a running server and reports
-success/failure counts, wall-clock time, throughput, and latency min/avg/max:
-
-```bash
-./scripts/load_test.sh 50 "Say hi"
+make test_ollama_runner
+make run_ollama_test
 ```
-
-`scripts/test_server.sh` runs a quick functional check of the endpoints
-(valid prompt, invalid JSON, and a small concurrent burst).
 
 ## Project layout
 
 ```
-include/   public headers (job, ts_queue, thread_pool, ollama_runner)
+include/   public headers (job, thread_pool, ollama_runner, job_store, db_pool)
 src/       implementations + server entry point
-tests/     gtest unit tests, mock runner, and the throughput benchmark
+tests/     gtest unit tests
 scripts/   load_test.sh and test_server.sh
 Makefile   build targets
 ```
 
-## Future architecture: durability
-
-The current design is single-process and fully in-memory: pending work lives in
-the `TSQueue` and job status/results live in the `JobRegistry` map. If the
-process restarts, both are lost — queued jobs disappear and `GET /job/<id>`
-returns `404` for work that had already completed.
-
-Making the system durable means addressing two separate problems:
-
-1. **Persist results (the registry).** Back `JobRegistry` with a durable store
-   so completed/in-flight job records survive a restart. The existing
-   `insertRegistry` / `getRegistry` interface is the seam — only the
-   implementation changes, not the callers.
-2. **Persist the queue (recover in-flight work).** If a worker dies mid-job, the
-   job is stuck `PROCESSING` forever. A durable, recoverable queue is needed.
-
-### Target design
-
-- **Postgres = durable source of truth.** A `jobs` table
-  (`id, status, prompt, result, error, created_at, updated_at`) holds every job.
-  This is what actually guarantees no data loss on restart. The same table can
-  act as the work queue using `SELECT … FOR UPDATE SKIP LOCKED`, letting N
-  workers claim distinct jobs without contention.
-- **Redis = optional speed layer, not durability.** Redis is primarily
-  in-memory, so it is *not* the durability mechanism. It is justified only as a
-  cache for high-volume `GET /job/<id>` polling, or as a faster queue broker in
-  front of Postgres — a performance optimization, not the safety net.
-
-A clean, defensible version of this is **Postgres only**: durable store +
-`SKIP LOCKED` queue + a startup/sweeper recovery pass that requeues any job left
-in `PROCESSING` past a lease timeout. Redis is added only when there is a
-measured reason to.
-
-### Correctness notes
-
-- **Acknowledge after commit.** Only return `202 Accepted` once the job is
-  committed to durable storage; acking after an in-memory push leaves a
-  lost-write window.
-- **At-least-once semantics.** Crash-recovery retries mean a job can run twice,
-  so handlers should be idempotent (e.g. via an idempotency key on submit).
-- **Crash recovery.** On startup, requeue anything not `COMPLETED`/`FAILED`.
-
-## Other future work
+### Future Work
 
 - Eviction / TTL for old completed jobs so the registry does not grow forever.
-- Request timeouts, retries, and bounded-queue backpressure under load.
-- Replace `std::cout` debug logging with a leveled logger.
-- Metrics/observability: queue depth, processing latency, failure rate.
+- DB pool hardening on Postgres outage — recover when the database is fully down
+  (pool drain leaving `acquire()` blocked) or when `checkin` drops a connection
+  slot after a failed reconnect, permanently shrinking the pool even after
+  recovery.
 
+## Set up steps
 
-Worker threads in the pool could block indefinitely because neither the outbound Ollama HTTP call nor the Postgres queries had any timeout configured — a hung curl_easy_perform or a stalled tx.exec/tx.commit would pin a worker (and the DB connection it held) forever, and once enough connections were pinned, DBPool::acquire() would deadlock the rest of the pool waiting on its unbounded condition variable. We bounded the common cases by adding CURLOPT_CONNECTTIMEOUT/CURLOPT_TIMEOUT to the Ollama client and folding connect_timeout, TCP keepalive/tcp_user_timeout, and statement_timeout into the DB connection string, so hung network or query calls now fail within a bounded time and release their connection instead of hanging. The remaining edge cases — a fully down DB eventually draining the pool, and a transient outage permanently shrinking it (since checkin drops a slot when reconnection fails), leaving acquire() blocked even after recovery — were deliberately left unaddressed as out-of-scope hardening for a controlled, local resume project.
+End-to-end instructions for getting PromptEngine running locally. The commands
+below assume **macOS with Homebrew** on Apple Silicon (`/opt/homebrew`). On
+Intel Macs, replace `/opt/homebrew` with `/usr/local` throughout.
+
+### 1. Install dependencies
+
+| Dependency | Purpose | Install (Homebrew) |
+| ---------- | ------- | ------------------ |
+| C++20 compiler | Build | Xcode Command Line Tools: `xcode-select --install` |
+| [libcurl](https://curl.se/libcurl/) | Ollama HTTP client | `brew install curl` |
+| [Crow](https://github.com/CrowCpp/Crow) | HTTP server (header-only) | `brew install crow` |
+| [nlohmann/json](https://github.com/nlohmann/json) | JSON parsing in `OllamaRunner` | Usually installed as a Crow dependency; if needed: `brew install nlohmann-json` |
+| [libpqxx](https://github.com/jtv/libpqxx) 8.x | Postgres C++ client (requires C++20) | `brew install libpqxx` |
+| [PostgreSQL](https://www.postgresql.org/) | Job storage | `brew install postgresql@16` |
+| [GoogleTest](https://github.com/google/googletest) | Unit tests (optional) | `brew install googletest` |
+
+Start Postgres and confirm it is listening on port 5432:
+
+```bash
+brew services start postgresql@16
+pg_isready -h localhost -p 5432
+```
+
+If another Postgres install is already bound to port 5432, stop it first or
+point `DATABASE_URL` at the instance you intend to use.
+
+#### Crow include path
+
+Crow is header-only. After `brew install crow`, headers land under
+`/opt/homebrew/include` (e.g. `crow.h`, `crow/...`). The Makefile already adds
+`-I/opt/homebrew/include`, so no extra step is needed on a default Homebrew
+layout.
+
+If you clone Crow manually instead:
+
+```bash
+git clone https://github.com/CrowCpp/Crow.git ~/Crow
+```
+
+add the Crow `include` directory to `CXXFLAGS` in the `Makefile` (and to
+`.vscode/c_cpp_properties.json` if you use VS Code IntelliSense):
+
+```makefile
+CXXFLAGS = ... -I/path/to/Crow/include
+```
+
+### 2. Create the database
+
+Create a database and apply the schema from `sql/schema.sql`:
+
+```bash
+createdb promptengine
+psql promptengine -f sql/schema.sql
+```
+
+Verify the table exists:
+
+```bash
+psql promptengine -c "\dt"
+```
+
+You should see a `jobs` table with columns for status, prompt, result, error,
+timestamps, and claim metadata.
+
+### 3. Environment variables
+
+The server reads two variables at startup/runtime:
+
+| Variable | Required | Description |
+| -------- | -------- | ----------- |
+| `DATABASE_URL` | Yes | libpqxx connection string for the `promptengine` database. |
+| `OLLAMA_KEY` | Yes | API key for [Ollama Cloud](https://ollama.com) (`Authorization: Bearer …`). |
+
+Create a local `.env` file in the project root (this file is gitignored):
+
+```bash
+# .env — do not commit
+export OLLAMA_KEY="your-ollama-api-key"
+export DATABASE_URL="postgresql://YOUR_USER@localhost:5432/promptengine"
+```
+
+Replace `YOUR_USER` with your macOS username (or a dedicated Postgres role).
+If your database requires a password:
+
+```bash
+export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/promptengine"
+```
+
+Load the variables into your shell before building/running:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+`DBPool` automatically appends connection timeouts (`connect_timeout`,
+keepalives, `statement_timeout`) to `DATABASE_URL`; you do not need to set
+those yourself.
+
+Optional (benchmarks only):
+
+| Variable | Purpose |
+| -------- | ------- |
+| `MOCK_DELAY_MS` | Artificial delay per job in `make bench` mock runner. |
+
+### 4. Fix include and library paths
+
+The `Makefile` hardcodes Homebrew paths for Apple Silicon:
+
+```makefile
+CXXFLAGS = -std=c++20 -I/opt/homebrew/include -Iinclude -I/opt/homebrew/opt/curl/include/curl
+LDFLAGS  = -L/opt/homebrew/lib -L/opt/homebrew/opt/libpq/lib
+```
+
+Adjust if your layout differs:
+
+- **Intel Mac:** change `/opt/homebrew` → `/usr/local`.
+- **Linux (apt):** typical flags are `-I/usr/include/postgresql` and
+  `-lpqxx -lpq`; library paths vary by distro.
+- **libpqxx not found:** ensure `brew install libpqxx` completed and add
+  `-L/opt/homebrew/opt/libpq/lib` (or `$(pg_config --libdir)`) to `LDFLAGS`.
+
+If VS Code IntelliSense cannot find headers, mirror the same `-I` paths in
+`.vscode/c_cpp_properties.json` under `includePath` (the repo includes a
+macOS template pointing at `/opt/homebrew/include` and
+`/opt/homebrew/opt/curl/include/curl`).
+
+Ensure the `build/` directory exists (or let `make` create it on first build):
+
+```bash
+mkdir -p build
+```
+
+### 5. Build
+
+With `DATABASE_URL` and `OLLAMA_KEY` exported (needed for some test targets,
+not for compiling the server itself):
+
+```bash
+make server
+```
+
+This produces `build/server`.
+
+Optional test binaries:
+
+```bash
+make test_db_pool test_job_store
+./build/test_db_pool
+./build/test_job_store
+```
+
+### 6. Run the server
+
+```bash
+set -a && source .env && set +a
+make run_server
+```
+
+The server listens on **http://localhost:18080**.
+
+Quick smoke test in another terminal:
+
+```bash
+./scripts/test_server.sh
+```
+
+Load test (server must already be running):
+
+```bash
+./scripts/load_test.sh 20 "Say hi"
+```
+
+Manual curl flow:
+
+```bash
+ID=$(curl -s -X POST http://localhost:18080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Say hello in one short sentence"}')
+curl -i "http://localhost:18080/job/$ID"
+```
+
+Poll until you get `200` (completed) or `500` (failed). Expect `202` while the
+job is still `QUEUED` or `PROCESSING`.
+
+### 7. Common issues
+
+| Symptom | Likely cause | Fix |
+| ------- | ------------ | --- |
+| `DATABASE_URL not set` on startup | Env var missing | `source .env` before `make run_server`. |
+| `OLLAMA_KEY environment variable not set` | Key not exported | Set `OLLAMA_KEY` in `.env` and source it. |
+| `fatal error: 'crow.h' file not found` | Crow not on include path | `brew install crow` or add `-I` to `CXXFLAGS`. |
+| `fatal error: 'pqxx/pqxx' file not found` | libpqxx not installed | `brew install libpqxx`. |
+| Connection refused on 5432 | Postgres not running | `brew services start postgresql@16`. |
+| `make server` linker errors for `-lpqxx` | Wrong `-L` path | Add `-L/opt/homebrew/opt/libpq/lib` to `LDFLAGS`. |
+| Jobs fail with HTTP 429 on load test | Ollama rate limit | Reduce concurrency or worker count in `src/server.cpp`. |
+
+Inspect persisted jobs directly:
+
+```bash
+psql promptengine -c "SELECT id, status, attempts, created_at FROM jobs ORDER BY id DESC LIMIT 10;"
+```

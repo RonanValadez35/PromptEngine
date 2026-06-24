@@ -31,17 +31,6 @@ debug:
 	-pthread \
 	-o build/test_thread_pool
 
-
-bench: src/ts_queue.cpp src/thread_pool.cpp tests/mock_ollama_runner.cpp tests/bench_thread_pool.cpp
-	$(CXX) $(CXXFLAGS) \
-	src/ts_queue.cpp \
-	src/thread_pool.cpp \
-	tests/mock_ollama_runner.cpp \
-	tests/bench_thread_pool.cpp \
-	$(LDFLAGS) \
-	-pthread \
-	-o build/bench
-
 test_db_pool: src/db_pool.cpp tests/test_db_pool.cpp
 	$(CXX) $(CXXFLAGS) src/db_pool.cpp tests/test_db_pool.cpp \
 	$(LDFLAGS) \
@@ -67,37 +56,4 @@ clean:
 	rm -f build/server build/bench build/test_db_pool build/test_job_store build/test_thread_pool
 	rm -rf build/test_thread_pool.dSYM
 	rm -f build/*.o
-
-
-######################################################################
-# Depreciated:
-
-# test_queue: src/ts_queue.cpp tests/test_ts_queue.cpp
-# 	$(CXX) $(CXXFLAGS) src/ts_queue.cpp tests/test_ts_queue.cpp \
-# 	$(LDFLAGS) \
-# 	-lgtest \
-# 	-lgtest_main \
-# 	-pthread \
-# 	-o build/test_queue
-
-# test_thread_pool: src/ts_queue.cpp src/thread_pool.cpp tests/test_thread_pool.cpp
-# 	$(CXX) $(CXXFLAGS) src/ts_queue.cpp src/thread_pool.cpp tests/test_thread_pool.cpp \
-# 	$(LDFLAGS) \
-# 	-lgtest \
-# 	-lgtest_main \
-# 	-pthread \
-# 	-o build/test_thread_pool
-
-# test_ollama_runner: src/ollama_runner.cpp tests/test_ollama_runner.cpp
-# 	$(CXX) $(CXXFLAGS) src/ollama_runner.cpp tests/test_ollama_runner.cpp \
-# 	$(LDFLAGS) \
-# 	-lcurl \
-# 	-o build/test_ollama_runner
-
-# run_tests: test_queue test_thread_pool
-# 	./build/test_queue
-# 	./build/test_thread_pool
 	
-# run_ollama_test: test_ollama_runner
-# 	./build/test_ollama_runner
-######################################################################
