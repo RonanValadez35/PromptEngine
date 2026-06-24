@@ -15,7 +15,7 @@ higher-level job framework.
 This project went through multiple design improvements, which can be seen from the various branches
 in this repo. The branches are listed in order of first to last below along with what they acomplished:
 
-1. version_1:
+1. **version_1:**
     This was the first rendition of the project which sought to implement a multi threaded server that
     could forward prompts to an ollama cloud model (gemma4:31b-cloud). The server would them return the response back to the client via the response message of the POST request. This version only had one POST endpoint /generate. A thread safe queue was built and utalized along with std::promise and std::future to transport the ollama response back to the client. 
 
@@ -26,7 +26,7 @@ in this repo. The branches are listed in order of first to last below along with
 
     While this approach acheived the goals I had originally set in mind, that being learning lower level design, it was too far away from something that could be seen in production. Mainly having one POST endpoint and having the client wait for the resposne. This was wasteful as I have only two CROW threads running, meaning that not every request message could be pushed onto the queue due to the waiting of the std::promise. 
 
-2. async_client_verion:
+2. **async_client_verion:**
       This was the second iteration of the project. The API was redesigned from a single blocking endpoint into an asynchronous job based architecture consisting of POST /generate and GET /job/<id>. Instead of holding an HTTP connection open while inference was running, the server immediately returns a job ID that can later be used to retrieve the result.
       
       To support this change, the design moved away from a std::promise/std::future-based workflow and introduced a shared JobState object. Each Job contains a std::shared_ptr<JobState>, allowing worker threads to update the job status and result as processing progresses. A JobRegistry class was added to maintain a hash map of job IDs to their corresponding JobState objects. This enables clients to poll the GET /job/<id> endpoint for job status and results, a pattern commonly used for long-running tasks in production systems.
@@ -40,7 +40,7 @@ in this repo. The branches are listed in order of first to last below along with
 
       To address this limitation, the next iteration will introduce persistent storage and a retry mechanism. Persisting jobs in a database would allow them to survive server restarts, while a retry policy would enable transient failures to be automatically reprocessed. Together, these additions would improve the reliability and fault tolerance of the system, bringing it closer to the architecture used in production job-processing services.
 
-3. main(data_persistance):
+3. **main(data_persistance):**
       This is the most up to date version of the inference server. This version introduces a Postgres local database that stores Job Record structs. The database replaces the Job Registry and the thread safe queue. A db_pool class is introduced that holds a queue containing unique pointers with a custom deleter of a pqxx object. This approach utalizes RAII
 
 
