@@ -362,7 +362,6 @@ make test_db_pool test_job_store
 ### 6. Run the server
 
 ```bash
-set -a && source .env && set +a
 make run_server
 ```
 
