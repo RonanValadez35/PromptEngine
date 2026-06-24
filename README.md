@@ -412,3 +412,4 @@ psql promptengine -c "SELECT id, status, attempts, created_at FROM jobs ORDER BY
 ## Other Notes
 
 - The first request will be a little slower due to a coldstart.
+- If running load_test.sh with more than 20 jobs it will show them as failing. They fail because Ollama is receiving too many requests concurrently. The jobs will complete via the reaper thread. Check the database to confirm this.
