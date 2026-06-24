@@ -312,24 +312,6 @@ If your database requires a password:
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/promptengine"
 ```
 
-Load the variables into your shell before building/running:
-
-```bash
-set -a
-source .env
-set +a
-```
-
-`DBPool` automatically appends connection timeouts (`connect_timeout`,
-keepalives, `statement_timeout`) to `DATABASE_URL`; you do not need to set
-those yourself.
-
-Optional (benchmarks only):
-
-| Variable | Purpose |
-| -------- | ------- |
-| `MOCK_DELAY_MS` | Artificial delay per job in `make bench` mock runner. |
-
 ### 4. Fix include and library paths
 
 The `Makefile` hardcodes Homebrew paths for Apple Silicon:
