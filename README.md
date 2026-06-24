@@ -298,10 +298,9 @@ The server reads two variables at startup/runtime:
 | `DATABASE_URL` | Yes | libpqxx connection string for the `promptengine` database. |
 | `OLLAMA_KEY` | Yes | API key for [Ollama Cloud](https://ollama.com) (`Authorization: Bearer …`). |
 
-Create a local `.env` file in the project root (this file is gitignored):
+In the terminal that you will start the server enter:
 
 ```bash
-# .env — do not commit
 export OLLAMA_KEY="your-ollama-api-key"
 export DATABASE_URL="postgresql://YOUR_USER@localhost:5432/promptengine"
 ```
